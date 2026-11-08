@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+input/
+output/
+04_test/data/
+90_Audio/

@@ -1,0 +1,5 @@
+profile,files,pesq,snr,pesq_failed
+noisy,824,1.9707,8.4461,0
+optuna,824,2.7887,4.8659,0
+pesq,824,2.6468,8.488,0
+balanced,824,2.4576,15.2163,0

@@ -1,0 +1,5 @@
+# 모델 실행(03_model) + 튜닝/평가(01_code)
+-r ../03_model/requirements.txt
+pandas>=2.1,<4
+pesq==0.0.4
+optuna>=4,<6
