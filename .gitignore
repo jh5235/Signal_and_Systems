@@ -1,6 +1,5 @@
 __pycache__/
-cache/
+*.pyc
 input/
 output/
-*.npz
-!nr/noise_bank.npz
+_dev/
