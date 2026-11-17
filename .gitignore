@@ -1,7 +1,6 @@
 __pycache__/
-*.pyc
-.venv/
+cache/
 input/
 output/
-04_test/data/
-90_Audio/
+*.npz
+!nr/noise_bank.npz

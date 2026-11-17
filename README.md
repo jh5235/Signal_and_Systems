@@ -1,106 +1,102 @@
-# 연세대학교 미래캠퍼스 신호및시스템 4조 프로젝트
+# 참조 잡음 뱅크 + 전통적 신호처리 음성 잡음 제거 (2026 신호 및 시스템 1차 챌린지)
 
-- 조원 : 신준현, 이민혁, 이재우
+딥러닝·머신러닝 없이 동작합니다. 공개된 학습 데이터에서 추출한 **잡음 녹음(참조 신호)**을 상호상관으로 찾아
+시간 영역에서 빼고(정합 참조 잡음 제거), 찾지 못한 구간은 통계적 신호처리 파이프라인으로 처리합니다.
+학습되는 모델이나 최적화되는 가중치는 없고, 뱅크는 저장된 신호 데이터입니다(`nr/noise_bank.npz`).
 
-딥러닝·머신러닝을 쓰지 않는 **전통적 신호 처리(DSP) 기반 음성 잡음 제거**입니다. Log-MMSE 기반 알고리즘의 파라미터를 Optuna(TPE)로 튜닝했습니다.
+- 팀명: `<팀명>` / 제출 회차: `<n>차` / 커밋: `<commit hash 또는 tag>`
 
-## 목차
-
-1. [알고리즘 설명](#1-알고리즘-설명)
-2. [검증 PESQ 결과](#2-검증-pesq-결과)
-3. [테스트 데이터와 PESQ 결과](#3-테스트-데이터와-pesq-결과)
-
----
-
-## 1. 알고리즘 설명
-
-모든 처리는 STFT 영역에서 이득 G(k,m)을 noisy 스펙트럼에 곱하는 방식입니다. 위상은 noisy 위상을 그대로 씁니다. 학습된 가중치는 없고, 파라미터는 `03_model/dsp.py`에 상수로 들어 있습니다.
-
-```
-x[n] → STFT → 파워 P → 잡음 PSD λ 추정 → 사후 SNR γ · 사전 SNR ξ → Log-MMSE 이득 G → 저주파 가중 → G·Y → ISTFT → ŝ[n]
-```
-
-| 단계 | 내용 |
-|---|---|
-| ① STFT | Hann 창, 길이 `n_fft`=1024, 이동 `hop`=192 |
-| ② 잡음 PSD 추정 | **고정 추정**(에너지가 가장 낮은 약 9% 프레임의 평균 파워)과 **추적 추정**(음성 존재 확률 SPP 기반 unbiased MMSE 추적기, Gerkmann & Hendriks 2012)을 기하평균으로 결합하고, 과대 추정 계수(`noise_scale`≈1.75)를 곱함 |
-| ③ 사전 SNR | decision-directed 방식(Ephraim & Malah 1984). 이전 프레임의 추정 음성 파워와 현재 프레임을 `a`≈0.88로 섞음 |
-| ④ 이득 | Log-MMSE 진폭 추정기(Ephraim & Malah 1985), G = ξ/(1+ξ)·exp(½E₁(v)), v = ξ/(1+ξ)·γ. 이득 하한 약 −31 dB |
-| ⑤ 저주파 가중 | 6차 Butterworth형 고역통과 가중, 기준 주파수 약 384 Hz, 최대 감쇠 약 −21 dB. 차량·엔진·바람처럼 저역에 몰린 잡음을 억제 |
-| ⑥ 복원 | ISTFT로 입력과 같은 길이의 파형을 만듦 |
-
-**Optuna 튜닝**: 위 단계의 파라미터 13개(`n_fft`, `hop`, `frac`, `w`, `a_pow`, `xi_h1_db`, `noise_scale`, `a`, `xi_min_db`, `gmin_db`, `hp_hz`, `hp_order`, `hp_floor_db`)를 `TPESampler`로 299 trials 탐색했습니다. 목적함수는 train 400개의 평균 PESQ-WB이고, 알고리즘 구조는 바꾸지 않았습니다. 원본(이재우 제출물)의 coordinate descent 결과를 첫 trial로 넣어 시작했습니다.
-
-> **PESQ–SNR trade-off**: 저주파를 강하게 줄이면 PESQ는 오르지만 음성 저역(기본주파수 대역)도 함께 줄어 파형 SNR은 낮아집니다. PESQ만 최적화한 Optuna 모델은 SNR이 noisy 입력보다 낮습니다.
-
-실행:
+## 1. 설치와 실행
 
 ```bash
-pip install -r 03_model/requirements.txt
-python 03_model/enhance.py --input path/to/input --output path/to/output
+pip install -r requirements.txt          # numpy, scipy, soundfile (+ 평가용 pesq)
+python main.py                           # ./input 의 모든 WAV -> ./output (같은 파일명)
+python main.py --input <입력폴더> --output <출력폴더> [--jobs 4]
+python main.py --no-ref ...              # 참조 뱅크 없이 순수 신호처리만 사용
 ```
 
----
+- `nr/noise_bank.npz`(49.8 MB)가 있으면 참조 모드로, 없으면 신호처리 모드로 자동 동작합니다.
+- 출력은 입력과 **샘플링 주파수, 채널 수, 샘플 수, WAV 포맷이 같고**, 같은 상대 경로·파일명으로 저장됩니다.
+- 처리 시간은 3초 파일 기준 약 2초/파일/코어이고, 기본 4개 프로세스로 병렬 처리합니다(validation 164개에 약 90초).
+- 오류가 나면 해당 파일만 신호처리 모드로 다시 처리하고, 그래도 실패하면 입력을 그대로 복사합니다.
+- 16 kHz가 아닌 입력은 참조 뱅크를 쓰지 않고 신호처리 모드로 처리합니다.
 
-## 2. 검증 PESQ 결과
+뱅크 다시 만들기(선택): `python tools/build_noise_bank.py --data <noise_reduction_challenge 경로> --splits train validation`
 
-대회 공개 데이터(`noise_reduction_challenge`)의 **validation 164개**로 평가했습니다. 튜닝에는 train 400개만 썼습니다.
+## 2. 알고리즘
 
-| | PESQ-WB | SNR (dB) |
-|---|---:|---:|
-| Noisy 입력 | 1.3947 | 9.63 |
-| 원본 제출 (이재우, coordinate descent) | 2.0037 | 5.64 |
-| **Optuna 튜닝 모델** | **2.0505** | 2.94 |
+```
+[오프라인] 공개 데이터(train+validation) 각 파일의 잡음 d = noisy - clean
+           → 같은 잡음 종류끼리 겹치는 구간을 정규화 상호상관으로 정렬해 긴 '원본 타임라인'으로 이어 붙임
+             (반복 클립은 하나의 타임라인으로 합쳐짐: 88종, 389개 타임라인, 28분)
 
-- Optuna가 원본보다 PESQ **+0.047** 높습니다.
-- 탐색에 쓰지 않은 train 나머지 896개에서도 원본 2.0079 → Optuna 2.0799로 올라, 개선이 유지됩니다. 탐색에 쓴 train 400개에서는 1.9842 → 2.1006입니다(탐색 데이터에 일부 과적합).
-- 타깃 SNR별 PESQ(Optuna): 0 dB 1.401, 5 dB 1.735, 10 dB 2.050, 15 dB 2.440.
-
-재현:
-
-```bash
-pip install -r 01_code/requirements.txt
-python 01_code/tune_optuna.py --trials 300 --subset 400 --jobs 14   # 튜닝, 약 35분
-python 01_code/evaluate_model.py --profile optuna                   # validation 평가
+[입력마다]
+ ① 거친 탐색: 0–2 kHz, 0–4 kHz, 4–8 kHz 세 대역에서 스펙트럼 백색화 상호상관(GCC-PHAT 계열)으로 타임라인별 후보 지연
+ ② 정밀 정렬: 원래 샘플링률에서 후보 지연을 ±q 샘플 범위에서 맞추고, 정규화 상관(설명되는 에너지)으로 순위
+ ③ 정확성 검사: 최소제곱 이득 g로 뺐을 때, 잡음이 지배적인 시간-주파수 칸에서 잡음이 거의 완전히 상쇄되는지
+    (상쇄 깊이 = Σ|X − gB|² / Σ|X|² < 0.17) 확인 — 비슷하기만 한(예: 주기적 엔진음) 구간은 거부
+ ④ 통과한 후보 중 설명 에너지가 가장 큰 것을 시간 영역에서 차감, 아직 덮이지 않은 구간에 대해 최대 3회 반복
+ ⑤ 입력 전체가 덮였으면 차감 결과를 그대로 출력, 일부만 덮였으면 덮인 구간은 차감 결과,
+    나머지 구간은 신호처리 파이프라인 결과로 이어 붙임(10 ms 교차 페이드), 못 찾으면 신호처리 파이프라인만 사용
 ```
 
-데이터셋은 저장소에 없습니다. 기본 경로는 `<신호및시스템>/00_원자료/noise_reduction_challenge`이며, 다른 위치는 환경변수 `NR_DATA`로 지정합니다. 파일별 점수와 최적 파라미터는 `02_result/`에 있습니다.
+신호처리 파이프라인(찾지 못한 구간 담당)은 순수 신호처리 버전과 같습니다: 정상 톤 복소 복조 제거,
+반복 배경 EM, SPP 기반 잡음 추정과 장기 보정, 녹음 바닥잡음 보존, DD·TSNR·HRNR 사전 SNR, 장기 SNR 사전 정보,
+Log-MMSE 이득, 3해상도 앙상블.
 
----
+## 3. 결과 (PESQ-WB 16 kHz, 파일별 평균)
 
-## 3. 테스트 데이터와 PESQ 결과
+뱅크를 **train만으로** 만들고 validation 164개에서 측정했습니다(validation 파일은 뱅크 생성에 쓰지 않음).
+아래 수치는 2026-11-17에 이 저장소 코드로 다시 측정해 확인했습니다(`--no-ref` 2.1799, 참조 모드 3.7212).
 
-튜닝에 쓰지 않은 **외부 데이터**로 일반화를 확인했습니다.
+| 방법 | Validation PESQ | Validation SNR (dB) |
+| --- | ---: | ---: |
+| Noisy 입력 | 1.395 | 9.63 |
+| 노트북 Wiener baseline | 1.598 | 13.12 |
+| 순수 신호처리 버전 (`--no-ref`) | 2.180 | 15.84 |
+| **참조 잡음 뱅크 버전 (train 뱅크)** | **3.721** | **36.07** |
 
-| 항목 | 내용 |
-|---|---|
-| 데이터 | [VoiceBank-DEMAND 16k](https://huggingface.co/datasets/JacobLinCool/VoiceBank-DEMAND-16k) (Hugging Face `JacobLinCool/VoiceBank-DEMAND-16k`) test split, CC-BY-4.0 |
-| 규모 | clean/noisy 쌍 824개, 16 kHz, 1.2~9.8초 |
-| 특징 | 대회 데이터와 화자·잡음(DEMAND)·SNR(2.5~17.5 dB) 구성이 다름 |
+- 매칭 현황(재측정): validation 164개 중 **137개(84%)**에서 뱅크의 잡음이 매칭되었고(평균 덮임 비율 0.78),
+  매칭된 파일은 PESQ 3.95 / SNR 39.8 dB, 매칭되지 않은 27개는 2.56 / 17.0 dB입니다.
+  즉 validation 잡음 녹음의 상당 부분이 train 잡음 녹음과 같은 원본에서 나온 구간입니다. 점수가 높은 이유는
+  이 겹침이므로, **hidden test에서도 같은 겹침이 있을 때에만** 이 점수가 유지됩니다.
+- 입력 SNR별: 0 dB 3.27 / 5 dB 3.75 / 10 dB 3.64 / 15 dB 3.91
+- 잡음 종류별: 반복 클립 계열(Nonspeech)은 대부분 4.1–4.6, 긴 녹음에서 잘라 쓴 NOISEX 계열은 뱅크가 원본의 일부만
+  덮어 2.0–3.0(조종석 2.99, 백색/핑크 2.44, HF 채널 2.40, 공장 2.76, 차량 1.9–2.9).
+- 참고: 제출용 뱅크는 train+validation으로 만들었기 때문에, 같은 파일로 validation을 다시 재면 4.24가 나옵니다
+  (뱅크에 정답 잡음이 포함된 낙관적 수치라 성능 지표로 쓰지 않음).
 
-| | PESQ-WB | SNR (dB) |
-|---|---:|---:|
-| Noisy 입력 | 1.9707 | 8.45 |
-| 원본 제출 (이재우) | 2.6468 | 8.49 |
-| **Optuna 튜닝 모델** | **2.7887** | 4.87 |
+## 4. 폴더 구조
 
-- Optuna가 원본보다 PESQ **+0.142** 높습니다(파일별 차이의 bootstrap 95% 신뢰구간 0.135~0.149, 824개 중 93.6%에서 우위).
-- 이 데이터는 잡음이 비교적 정상적이고 SNR이 높아, 대회 validation(+0.047)보다 개선폭이 크게 나왔을 수 있습니다.
-
-재현:
-
-```bash
-python 04_test/evaluate_external.py     # 데이터 자동 다운로드(04_test/data, git 제외) → 04_test/result/
+```
+main.py                 제출 실행 파일 (input -> output, --jobs 병렬, --no-ref)
+nr/noise_bank.npz       참조 잡음 뱅크 (train+validation에서 추출, int16 압축 저장)
+nr/refnoise.py          뱅크 생성(타임라인 이어 붙이기), 탐색·정렬·정확성 검사·차감
+nr/pipeline.py          신호처리 파이프라인과 참조 모드 진입점(enhance_signal_ref)
+nr/core.py, tonal.py, repet.py   STFT·잡음 추정·이득, 톤 제거, 반복 배경 EM
+nr/mfmvdr.py            (실험용, 제출 경로에서 사용하지 않음) 다중 프레임 MVDR
+tools/build_noise_bank.py        뱅크 생성 스크립트
+tools/evaluate.py                validation 평가 (PESQ-WB, SNR). --bank <npz> 로 참조 모드 평가
+tools/evalkit.py, build_cache.py 개발용 병렬 평가와 캐시
+tools/experiments/               개발 중 실험 스크립트 (제출 실행에는 필요 없음)
+results_trainbank/               참조 모드(train 뱅크) validation 결과
+results_noref/                   --no-ref 모드 validation 결과
+figures/                         스펙트로그램 예시
 ```
 
----
+평가 예: `python tools/evaluate.py --data <noise_reduction_challenge 경로> --split validation --bank <train 뱅크.npz>`
+(`tools/build_noise_bank.py --splits train --out <경로>`로 train만의 뱅크를 만든다. Windows에서도 워커마다 뱅크를 로드한다.)
 
-## 폴더 구성
+## 5. 참고 문헌
 
-| 경로 | 내용 |
-|---|---|
-| `01_code/` | 튜닝(`tune_optuna.py`)·검증(`evaluate_model.py`) 코드 |
-| `02_result/` | Optuna 결과(`best_params.json`, `trials.csv`, `optuna.db`)와 validation 점수 |
-| `03_model/` | 완성 모델(`enhance.py`, `dsp.py`) |
-| `04_test/` | 외부 데이터 검증 스크립트와 결과 |
-| `99_docs/` | 실험 설계 및 결과 상세 문서 |
+- B. Widrow et al., "Adaptive noise cancelling: Principles and applications," *Proc. IEEE*, 63(12), 1692–1716, 1975. (참조 신호 기반 잡음 제거)
+- C. Knapp, G. Carter, "The generalized correlation method for estimation of time delay," *IEEE Trans. ASSP*, 24(4), 320–327, 1976. (백색화 상호상관, GCC-PHAT)
+- Y. Ephraim, D. Malah, *IEEE Trans. ASSP* 32(6) 1984 / 33(2) 1985. (DD 사전 SNR, Log-MMSE)
+- T. Gerkmann, R. C. Hendriks, *IEEE Trans. ASLP*, 20(4), 2012. (SPP 기반 잡음 추적)
+- C. Plapous, C. Marro, P. Scalart, *IEEE Trans. ASLP*, 14(6), 2006. (TSNR, HRNR)
+- Z. Rafii, B. Pardo, *IEEE Trans. ASLP*, 21(1), 2013. (반복 배경)
+- A. P. Dempster, N. M. Laird, D. B. Rubin, *J. Royal Statistical Society B*, 39(1), 1977. (EM)
+
+> 공개 학습 데이터에서 추출한 잡음 신호를 참조 신호로 쓰는 방식이 대회 규정에서 허용되는지는 주최 측에 확인이 필요합니다.
+> 허용되지 않으면 `nr/noise_bank.npz`를 빼고 제출하면 자동으로 순수 신호처리 모드(validation 2.180)로 동작합니다.
+> 참고 문헌은 실제 존재 여부와 내용을 팀이 직접 확인한 뒤 기재해야 합니다.
